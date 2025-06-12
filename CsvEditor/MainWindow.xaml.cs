@@ -1,160 +1,61 @@
-﻿// MainWindow.xaml.cs
-using System.Text;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using System.ComponentModel;
-using System.IO;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
-using Microsoft.Win32;
-using System.Threading.Tasks;
+using System.IO;
 using System.Linq;
-
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using Microsoft.Win32;
+using System.Windows.Threading;
 namespace CsvEditor
 {
     public partial class MainWindow : Window
     {
-        private DataTable dataTable = new DataTable();
-        private BackgroundWorker worker = new BackgroundWorker();
-
-        public MainWindow()
+        DataTable dataTable = new(); List<long> chunkOffsets = new(); string filePath; int totalLines; int chunkSize = 1000; int currentChunk = -1; DispatcherTimer cleanupTimer = new() { Interval = TimeSpan.FromSeconds(5) }; DateTime lastAccess; readonly TimeSpan chunkTimeout = TimeSpan.FromSeconds(30);
+        public MainWindow() { InitializeComponent(); txtChunk.Text = $"Chunk: {chunkSize}"; cleanupTimer.Tick += CleanupTimer_Tick; cleanupTimer.Start(); }
+        async void LoadCsv_Click(object s, RoutedEventArgs e)
         {
-            InitializeComponent();
-            SetupBackgroundWorker();
+            OpenFileDialog dlg = new() { Filter = "CSV (*.csv)|*.csv|Tutti i file (*.*)|*.*", Title = "Seleziona CSV" }; if (dlg.ShowDialog() != true) return;
+            ResetUI(); filePath = dlg.FileName; chunkSize = (int)sliderChunk.Value; progressBar.Visibility = Visibility.Visible; progressBar.IsIndeterminate = true; await Task.Run(BuildIndex); progressBar.IsIndeterminate = false; progressBar.Visibility = Visibility.Collapsed; btnExport.IsEnabled = true; sliderChunk.IsEnabled = false; await LoadChunkAsync(0);
         }
-
-        private void SetupBackgroundWorker()
+        void BuildIndex()
         {
-            worker.WorkerReportsProgress = true;
-            worker.DoWork += Worker_DoWork;
-            worker.ProgressChanged += Worker_ProgressChanged;
-            worker.RunWorkerCompleted += Worker_RunWorkerCompleted;
+            chunkOffsets.Clear(); using FileStream fs = File.OpenRead(filePath); using StreamReader sr = new(fs, Encoding.UTF8); string header = sr.ReadLine(); if (header == null) return;
+            Dispatcher.Invoke(() => { dataTable.Clear(); dataTable.Columns.Clear(); foreach (string h in ParseCsvLine(header)) dataTable.Columns.Add(h); dataGrid.Columns.Clear(); dataGrid.ItemsSource = null; dataGrid.ItemsSource = dataTable.DefaultView; });
+            long start = fs.Position; chunkOffsets.Add(start); int lc = 0; string line; while ((line = sr.ReadLine()) != null) { lc++; if (lc % chunkSize == 0) chunkOffsets.Add(fs.Position); }
+            totalLines = lc + 1;
         }
-
-        private async void LoadCsv_Click(object sender, RoutedEventArgs e)
+        async Task LoadChunkAsync(int idx)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog { Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*", Title = "Seleziona un file CSV" };
-            if (openFileDialog.ShowDialog() == true)
-            {
-                progressBar.Visibility = Visibility.Visible;
-                progressBar.Value = 0;
-                dataGrid.Visibility = Visibility.Collapsed;
-                btnExport.IsEnabled = false;
-                try
-                {
-                    await Task.Run(() => worker.RunWorkerAsync(openFileDialog.FileName));
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Errore durante il caricamento: {ex.Message}");
-                    ResetUI();
-                }
-            }
+            if (idx < 0 || idx >= chunkOffsets.Count || idx == currentChunk) return; currentChunk = idx; progressBar.Visibility = Visibility.Visible; progressBar.IsIndeterminate = true; List<string[]> rows = new();
+            await Task.Run(() => { using FileStream fs = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read); fs.Seek(chunkOffsets[idx], SeekOrigin.Begin); using StreamReader sr = new(fs, Encoding.UTF8, false, 1024, true); for (int i = 0; i < chunkSize; i++) { string l = sr.ReadLine(); if (l == null) break; rows.Add(ParseCsvLine(l)); } }); await Dispatcher.InvokeAsync(() => { dataTable.Clear(); foreach (string[] r in rows) dataTable.Rows.Add(r); progressBar.Visibility = Visibility.Collapsed; lastAccess = DateTime.Now; }, DispatcherPriority.Background);
         }
-
-        private void Worker_DoWork(object sender, DoWorkEventArgs e)
+        void DataGrid_Loaded(object s, RoutedEventArgs e) { ScrollViewer sv = GetSV(dataGrid); if (sv != null) sv.ScrollChanged += ScrollChanged; }
+        void ScrollChanged(object s, ScrollChangedEventArgs e)
         {
-            string filePath = (string)e.Argument;
-            List<string[]> rows = new List<string[]>();
-            int totalLines = File.ReadAllLines(filePath).Length;
-            int currentLine = 0;
-            using (StreamReader reader = new StreamReader(filePath))
-            {
-                string line;
-                string[] headers = reader.ReadLine()?.Split(',');
-                if (headers == null) return;
-                rows.Add(headers);
-                currentLine++;
-                while ((line = reader.ReadLine()) != null)
-                {
-                    rows.Add(line.Split(','));
-                    currentLine++;
-                    int progress = (int)((double)currentLine / totalLines * 100);
-                    worker.ReportProgress(progress);
-                }
-            }
-            e.Result = rows;
+            ScrollViewer sv = s as ScrollViewer; if (sv == null || sv.ScrollableHeight == 0) return; double pos = sv.VerticalOffset / sv.ScrollableHeight; int approx = (int)(pos * (totalLines - 1)); int tgt = approx / chunkSize; _ = LoadChunkAsync(tgt);
         }
-
-        private void Worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        void SliderChunk_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e)
         {
-            Dispatcher.BeginInvoke(new Action(() => { progressBar.Value = e.ProgressPercentage; }), System.Windows.Threading.DispatcherPriority.Background);
+            chunkSize = (int)e.NewValue; if (txtChunk == null) return; if (!sliderChunk.IsEnabled) return; txtChunk.Text = $"Chunk: {chunkSize}";
         }
-
-        private void Worker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        void CleanupTimer_Tick(object s, EventArgs e) { if (DateTime.Now - lastAccess > chunkTimeout && dataTable.Rows.Count > 0) dataTable.Clear(); }
+        ScrollViewer GetSV(DependencyObject d) { if (d is ScrollViewer) return (ScrollViewer)d; for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++) { ScrollViewer sv = GetSV(VisualTreeHelper.GetChild(d, i)); if (sv != null) return sv; } return null; }
+        void ExportCsv_Click(object s, RoutedEventArgs e)
         {
-            Dispatcher.BeginInvoke(new Action(() => {
-                progressBar.Visibility = Visibility.Collapsed;
-                progressBar.Value = 0;
-                dataTable.Clear();
-                dataTable.Columns.Clear();
-                if (e.Error != null)
-                {
-                    MessageBox.Show($"Errore: {e.Error.Message}");
-                    ResetUI();
-                    return;
-                }
-                List<string[]> rows = e.Result as List<string[]>;
-                if (rows == null || rows.Count == 0)
-                {
-                    MessageBox.Show("Nessun dato.");
-                    ResetUI();
-                    return;
-                }
-                string[] headers = rows[0];
-                foreach (string header in headers) dataTable.Columns.Add(header);
-                for (int i = 1; i < rows.Count; i++) dataTable.Rows.Add(rows[i]);
-                dataGrid.ItemsSource = dataTable.DefaultView;
-                dataGrid.Visibility = Visibility.Visible;
-                btnExport.IsEnabled = true;
-            }), System.Windows.Threading.DispatcherPriority.Background);
+            SaveFileDialog dlg = new() { Filter = "CSV (*.csv)|*.csv|Tutti i file (*.*)|*.*", Title = "Salva CSV" }; if (dlg.ShowDialog() != true) return;
+            try { using StreamWriter w = new(dlg.FileName, false, Encoding.UTF8); IEnumerable<string> cols = dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName); w.WriteLine(string.Join(",", cols.Select(Esc))); foreach (DataRow r in dataTable.Rows) w.WriteLine(string.Join(",", r.ItemArray.Select(x => Esc(x.ToString())))); MessageBox.Show("Esportazione completata"); }
+            catch (Exception ex) { MessageBox.Show($"Errore: {ex.Message}"); }
         }
-
-        private void ExportCsv_Click(object sender, RoutedEventArgs e)
+        void ResetUI() { dataGrid.ItemsSource = null; dataTable.Clear(); dataTable.Columns.Clear(); progressBar.Visibility = Visibility.Collapsed; currentChunk = -1; sliderChunk.IsEnabled = true; }
+        string[] ParseCsvLine(string line)
         {
-            SaveFileDialog saveFileDialog = new SaveFileDialog { Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*", Title = "Salva CSV" };
-            if (saveFileDialog.ShowDialog() == true)
-            {
-                try
-                {
-                    using (StreamWriter writer = new StreamWriter(saveFileDialog.FileName, false, Encoding.UTF8))
-                    {
-                        IEnumerable<string> columnNames = dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
-                        writer.WriteLine(string.Join(",", columnNames.Select(Escape)));
-                        foreach (DataRow row in dataTable.Rows) writer.WriteLine(string.Join(",", row.ItemArray.Select(field => Escape(field.ToString()))));
-                    }
-                    MessageBox.Show("Esportazione completata!");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Errore durante l'esportazione: {ex.Message}");
-                }
-            }
+            List<string> f = new(); bool q = false; StringBuilder sb = new(); foreach (char c in line) { if (c == '\"') { q = !q; continue; } if (c == ',' && !q) { f.Add(sb.ToString()); sb.Clear(); continue; } sb.Append(c); }
+            f.Add(sb.ToString()); return f.ToArray();
         }
-
-        private void ResetUI()
-        {
-            progressBar.Visibility = Visibility.Collapsed;
-            progressBar.Value = 0;
-            dataGrid.Visibility = Visibility.Collapsed;
-            btnExport.IsEnabled = false;
-        }
-
-        private static string Escape(string s)
-        {
-            if (s.Contains("\"") || s.Contains(",") || s.Contains("\n") || s.Contains("\r"))
-            {
-                s = s.Replace("\"", "\"\"");
-                return $"\"{s}\"";
-            }
-            return s;
-        }
+        static string Esc(string s) { if (s.IndexOfAny(['\"', ',', '\n', '\r']) != -1) { s = s.Replace("\"", "\"\""); return $"\"{s}\""; } return s; }
     }
 }
