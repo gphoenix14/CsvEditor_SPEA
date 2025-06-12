@@ -1,0 +1,28 @@
+﻿<Window x:Class="CsvEditor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CsvEditor"
+        mc:Ignorable="d"
+        Title="MainWindow" Height="500" Width="800">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <!-- Pulsante di cariamnto -->
+        <Button x:Name="btnLoad" Content="Carica CSV" Click="LoadCsv_Click" Margin="12" Padding="5" HorizontalAlignment="Left" />
+    
+        <!-- Barra di progresso -->
+        <ProgressBar x:Name="progressBar" Grid.Row="1" Margin="12" Height="19" Visibility="Collapsed" Minimum="0" Maximum="100" />
+        
+        <!-- Griglia dei dati -->
+        <DataGrid x:Name="dataGrid" Grid.Row="2" Margin="11" AutoGenerateColumns="True" CanUserAddRows="False" />
+
+        <!--Pulsante di Esportazione -->
+        <Button x:Name="btnExport" Grid.Row="3" Content="Esporta CSV" Click="ExportCsv_Click" Margin="12" Padding="5" HorizontalAlignment="Right" /> 
+    </Grid>
+</Window>
